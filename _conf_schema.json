@@ -1,0 +1,98 @@
+{
+  "api_base_url": {
+    "description": "本地图库 API 服务地址",
+    "type": "string",
+    "default": "http://localhost:8282",
+    "hint": "本地 Pixiv 图库服务的 HTTP 地址，例如 http://localhost:8282"
+  },
+  "default_count": {
+    "description": "默认返回图片数量",
+    "type": "int",
+    "default": 1,
+    "hint": "每次指令默认返回的图片数量，范围 1-10"
+  },
+  "default_cooldown": {
+    "description": "默认冷却时长",
+    "type": "string",
+    "default": "1d",
+    "hint": "防重复冷却时长，格式：30m / 12h / 1d / 7d。留空则不启用冷却"
+  },
+  "use_thumbnail": {
+    "description": "使用缩略图",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后发送缩略图而非原图，加载更快但画质较低"
+  },
+  "show_info": {
+    "description": "附带作品信息",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后在图片下方附带 Pixiv ID、画师名、匹配数量等信息"
+  },
+  "subscriptions": {
+    "description": "定时推送订阅列表",
+    "type": "template_list",
+    "hint": "管理所有定时推送订阅。可在此处新增、编辑或删除订阅，也可通过 /pixiv sub add 指令在会话中创建。",
+    "templates": {
+      "subscription": {
+        "name": "订阅",
+        "hint": "一条定时推送订阅配置",
+        "items": {
+          "sub_id": {
+            "description": "订阅 ID（自动生成，请勿修改）",
+            "type": "string",
+            "default": ""
+          },
+          "unified_msg_origin": {
+            "description": "目标会话标识",
+            "type": "string",
+            "default": "",
+            "hint": "推送目标会话的唯一标识。在目标群/私聊中发送 /pixiv sub origin 可获取该值。"
+          },
+          "interval": {
+            "description": "推送间隔",
+            "type": "string",
+            "default": "6h",
+            "hint": "随机触发间隔，格式：30m / 2h / 1d / 7d / 2w（支持 m/h/d/w 单位，最小 10m）"
+          },
+          "tags": {
+            "description": "筛选标签（空格分隔）",
+            "type": "string",
+            "default": "",
+            "hint": "多个标签用空格分隔，如 girl solo。留空则不限制标签。"
+          },
+          "exclude_tags": {
+            "description": "排除标签（空格分隔）",
+            "type": "string",
+            "default": "",
+            "hint": "命中任意一个标签的图片将被排除，多个标签用空格分隔。"
+          },
+          "author_id": {
+            "description": "画师 ID",
+            "type": "string",
+            "default": "",
+            "hint": "指定画师 ID，留空则不限制画师。"
+          },
+          "count": {
+            "description": "每次推送数量",
+            "type": "int",
+            "default": 1,
+            "hint": "每次推送的图片数量，范围 1-10。"
+          },
+          "cooldown": {
+            "description": "冷却时长",
+            "type": "string",
+            "default": "1d",
+            "hint": "防重复冷却时长，格式：30m / 12h / 1d / 7d。留空则不启用冷却。"
+          },
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true,
+            "hint": "关闭后该订阅将暂停推送，但不会被删除。"
+          }
+        }
+      }
+    }
+  }
+}
