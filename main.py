@@ -343,12 +343,12 @@ class Main(Star):
                 if item.author_name:
                     info += f" | 画师: {item.author_name}"
                 content.append(Comp.Plain(info))
-            nodes.append(Comp.Node(content=content))
+            nodes.append(Comp.Node(uin=0, name="Pixiv", content=content))
 
         # 最后追加一个汇总节点
         if self._show_info and len(result.items) > 1:
             summary = f"共 {len(result.items)} 张 | 匹配: {result.total_matched} 张"
-            nodes.append(Comp.Node(content=[Comp.Plain(summary)]))
+            nodes.append(Comp.Node(uin=0, name="Pixiv", content=[Comp.Plain(summary)]))
 
         return nodes
 
@@ -437,17 +437,11 @@ class Main(Star):
         if not result.items:
             return
 
-        # 多图且开启合并转发时，使用 Node 列表；否则逐张拼入 MessageChain
+        # 多图且开启合并转发时，将所有 Node 作为一条合并消息发出；否则逐张拼入 MessageChain
         if self._use_forward and len(result.items) > 1:
             nodes = self._build_forward_nodes(result)
             chain = MessageChain()
-            for node in nodes:
-                # Node 内容序列化为图片 + 文字
-                for comp in node.content:
-                    if isinstance(comp, Comp.Image):
-                        chain.file_image(comp.url or "")
-                    elif isinstance(comp, Comp.Plain):
-                        chain.message(comp.text)
+            chain.chain = nodes
         else:
             chain = MessageChain()
             for item in result.items:
