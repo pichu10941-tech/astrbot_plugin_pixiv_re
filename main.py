@@ -404,7 +404,8 @@ class Main(Star):
         # use_merge=None 时跟随配置；单张图片不走合并转发
         should_forward = (use_merge if use_merge is not None else self._use_forward)
         if should_forward and len(result.items) > 1:
-            await event.send(event.chain_result(self._build_forward_nodes(result)))
+            nodes = self._build_forward_nodes(result)
+            await event.send(event.chain_result([Comp.Nodes(nodes=nodes)]))
         else:
             await event.send(event.chain_result(self._build_chain(result)))
 
@@ -441,7 +442,7 @@ class Main(Star):
         if self._use_forward and len(result.items) > 1:
             nodes = self._build_forward_nodes(result)
             chain = MessageChain()
-            chain.chain = nodes
+            chain.chain = [Comp.Nodes(nodes=nodes)]
         else:
             chain = MessageChain()
             for item in result.items:
