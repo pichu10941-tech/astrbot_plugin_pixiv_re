@@ -52,36 +52,36 @@ class Main(Star):
         logger.info("[pixiv] 定时推送调度器已停止")
 
     # ------------------------------------------------------------------ #
-    # 指令组：pixiv
+    # 指令组：pixivr
     # ------------------------------------------------------------------ #
 
-    @filter.command_group("pixiv")
-    def pixiv(self):
+    @filter.command_group("pixivr")
+    def pixivr(self):
         """Pixiv 本地图库指令组"""
 
     # ------------------------------------------------------------------ #
-    # /pixiv random [count]
+    # /pixivr random [count]
     # ------------------------------------------------------------------ #
 
-    @pixiv.command("random")
+    @pixivr.command("random")
     async def cmd_random(self, event: AstrMessageEvent, count: int = 0, merge: str = ""):
-        """随机获取图片。用法：/pixiv random [数量] [-m]"""
+        """随机获取图片。用法：/pixivr random [数量] [-m]"""
         n = count if count > 0 else self._default_count
         use_merge = True if merge in ("-m", "--merge") else (False if merge else None)
         await self._send_fetch(event, count=n, use_merge=use_merge)
 
     # ------------------------------------------------------------------ #
-    # /pixiv tag <tag1> [tag2 ...] [count]
+    # /pixivr tag <tag1> [tag2 ...] [count]
     # ------------------------------------------------------------------ #
 
-    @pixiv.command("tag")
+    @pixivr.command("tag")
     async def cmd_tag(self, event: AstrMessageEvent):
-        """按标签搜索图片。用法：/pixiv tag <标签1> [标签2 ...] [数量] [-m]"""
+        """按标签搜索图片。用法：/pixivr tag <标签1> [标签2 ...] [数量] [-m]"""
         args = event.message_str.strip().split()
         args = args[2:] if len(args) > 2 else []
 
         if not args:
-            yield event.plain_result("请提供至少一个标签。用法：/pixiv tag <标签1> [标签2 ...] [数量] [-m]")
+            yield event.plain_result("请提供至少一个标签。用法：/pixivr tag <标签1> [标签2 ...] [数量] [-m]")
             return
 
         # 提取 -m 标志
@@ -102,32 +102,32 @@ class Main(Star):
         await self._send_fetch(event, tags=args, count=count, use_merge=use_merge)
 
     # ------------------------------------------------------------------ #
-    # /pixiv author <author_id> [count]
+    # /pixivr author <author_id> [count]
     # ------------------------------------------------------------------ #
 
-    @pixiv.command("author")
+    @pixivr.command("author")
     async def cmd_author(self, event: AstrMessageEvent, author_id: int, count: int = 0, merge: str = ""):
-        """按画师 ID 搜索图片。用法：/pixiv author <画师ID> [数量] [-m]"""
+        """按画师 ID 搜索图片。用法：/pixivr author <画师ID> [数量] [-m]"""
         n = count if count > 0 else self._default_count
         use_merge = True if merge in ("-m", "--merge") else (False if merge else None)
         await self._send_fetch(event, author_id=author_id, count=n, use_merge=use_merge)
 
     # ------------------------------------------------------------------ #
-    # /pixiv pid <pid> [page]
+    # /pixivr pid <pid> [page]
     # ------------------------------------------------------------------ #
 
-    @pixiv.command("pid")
+    @pixivr.command("pid")
     async def cmd_pid(self, event: AstrMessageEvent, pid: int, page: int = 0):
-        """按作品 ID 获取图片。用法：/pixiv pid <作品ID> [页码(0起)]"""
+        """按作品 ID 获取图片。用法：/pixivr pid <作品ID> [页码(0起)]"""
         await self._send_fetch(event, pid=pid, page=page, count=1)
 
     # ------------------------------------------------------------------ #
-    # /pixiv search
+    # /pixivr search
     # ------------------------------------------------------------------ #
 
-    @pixiv.command("search")
+    @pixivr.command("search")
     async def cmd_search(self, event: AstrMessageEvent):
-        """高级搜索。用法：/pixiv search [-t 标签] [-e 排除标签] [-a 画师ID] [-n 数量] [-p 页码] [-c 冷却] [-m]"""
+        """高级搜索。用法：/pixivr search [-t 标签] [-e 排除标签] [-a 画师ID] [-n 数量] [-p 页码] [-c 冷却] [-m]"""
         args = event.message_str.strip().split()[2:]
 
         tags: list[str] = []
@@ -185,27 +185,27 @@ class Main(Star):
         )
 
     # ------------------------------------------------------------------ #
-    # 指令组：pixiv sub
+    # 指令组：pixivr sub
     # ------------------------------------------------------------------ #
 
-    @pixiv.group("sub")
+    @pixivr.group("sub")
     def sub(self):
         """定时推送订阅管理"""
 
-    # /pixiv sub origin
+    # /pixivr sub origin
     @sub.command("origin")
     async def cmd_sub_origin(self, event: AstrMessageEvent):
         """查看当前会话的 unified_msg_origin，用于在 WebUI 中填写推送目标。"""
         umo = event.unified_msg_origin
         yield event.plain_result(f"当前会话标识：\n{umo}\n\n可将此值填入 WebUI 插件配置的订阅列表中。")
 
-    # /pixiv sub list
+    # /pixivr sub list
     @sub.command("list")
     async def cmd_sub_list(self, event: AstrMessageEvent):
         """列出当前会话的所有订阅。"""
         subs = self._sub_manager.list_by_origin(event.unified_msg_origin)
         if not subs:
-            yield event.plain_result("当前会话暂无订阅。使用 /pixiv sub add <间隔> 创建订阅。")
+            yield event.plain_result("当前会话暂无订阅。使用 /pixivr sub add <间隔> 创建订阅。")
             return
 
         lines = ["当前会话订阅列表："]
@@ -214,19 +214,19 @@ class Main(Star):
             lines.append(sub.describe(next_trigger))
         yield event.plain_result("\n".join(lines))
 
-    # /pixiv sub add <interval> [-t tag] [-e exclude] [-a author_id] [-n count] [-c cooldown]
+    # /pixivr sub add <interval> [-t tag] [-e exclude] [-a author_id] [-n count] [-c cooldown]
     @filter.permission_type(filter.PermissionType.ADMIN)
     @sub.command("add")
     async def cmd_sub_add(self, event: AstrMessageEvent):
-        """[管理员] 创建定时推送订阅。用法：/pixiv sub add <间隔> [-t 标签] [-e 排除标签] [-a 画师ID] [-n 数量] [-c 冷却]"""
+        """[管理员] 创建定时推送订阅。用法：/pixivr sub add <间隔> [-t 标签] [-e 排除标签] [-a 画师ID] [-n 数量] [-c 冷却]"""
         args = event.message_str.strip().split()
-        # 去掉 "pixiv sub add"
+        # 去掉 "pixivr sub add"
         args = args[3:] if len(args) > 3 else []
 
         if not args:
             yield event.plain_result(
-                "用法：/pixiv sub add <间隔> [-t 标签] [-e 排除标签] [-a 画师ID] [-n 数量] [-c 冷却]\n"
-                "示例：/pixiv sub add 6h -t girl -t solo -n 2 -c 1d"
+                "用法：/pixivr sub add <间隔> [-t 标签] [-e 排除标签] [-a 画师ID] [-n 数量] [-c 冷却]\n"
+                "示例：/pixivr sub add 6h -t girl -t solo -n 2 -c 1d"
             )
             return
 
@@ -288,17 +288,17 @@ class Main(Star):
 
         yield event.plain_result(f"订阅创建成功！\n{sub.describe()}")
 
-    # /pixiv sub del <sub_id>
+    # /pixivr sub del <sub_id>
     @filter.permission_type(filter.PermissionType.ADMIN)
     @sub.command("del")
     async def cmd_sub_del(self, event: AstrMessageEvent, sub_id: str):
-        """[管理员] 删除指定订阅。用法：/pixiv sub del <订阅ID>"""
+        """[管理员] 删除指定订阅。用法：/pixivr sub del <订阅ID>"""
         if self._sub_manager.remove(sub_id):
             yield event.plain_result(f"订阅 [{sub_id}] 已删除。")
         else:
-            yield event.plain_result(f"未找到订阅 [{sub_id}]，请通过 /pixiv sub list 查看当前订阅。")
+            yield event.plain_result(f"未找到订阅 [{sub_id}]，请通过 /pixivr sub list 查看当前订阅。")
 
-    # /pixiv sub clear
+    # /pixivr sub clear
     @filter.permission_type(filter.PermissionType.ADMIN)
     @sub.command("clear")
     async def cmd_sub_clear(self, event: AstrMessageEvent):

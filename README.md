@@ -31,19 +31,19 @@ git clone <仓库地址> astrbot_plugin_pixiv_re
 
 ## 指令
 
-所有指令以 `/pixiv` 开头。
+所有指令以 `/pixivr` 开头。
 
 ### 图片获取
 
 | 指令 | 说明 |
 |---|---|
-| `/pixiv random [数量]` | 随机获取图片 |
-| `/pixiv tag <标签...> [数量]` | 按标签搜索，多个标签取 AND，最后一个纯数字视为数量 |
-| `/pixiv author <画师ID> [数量]` | 按画师 ID 搜索 |
-| `/pixiv pid <作品ID> [页码]` | 按作品 ID 精确获取，页码从 0 开始 |
-| `/pixiv search [参数]` | 高级搜索，支持完整参数组合 |
+| `/pixivr random [数量]` | 随机获取图片 |
+| `/pixivr tag <标签...> [数量]` | 按标签搜索，多个标签取 AND，最后一个纯数字视为数量 |
+| `/pixivr author <画师ID> [数量]` | 按画师 ID 搜索 |
+| `/pixivr pid <作品ID> [页码]` | 按作品 ID 精确获取，页码从 0 开始 |
+| `/pixivr search [参数]` | 高级搜索，支持完整参数组合 |
 
-`/pixiv search` 参数：
+`/pixivr search` 参数：
 
 ```
 -t  <标签>      筛选标签（可重复）
@@ -57,8 +57,8 @@ git clone <仓库地址> astrbot_plugin_pixiv_re
 
 示例：
 ```
-/pixiv search -t girl -t solo -e nsfw -n 3 -c 12h
-/pixiv search -t girl -n 5 -m      # 强制合并转发
+/pixivr search -t girl -t solo -e nsfw -n 3 -c 12h
+/pixivr search -t girl -n 5 -m      # 强制合并转发
 ```
 
 ### 合并转发
@@ -74,26 +74,26 @@ git clone <仓库地址> astrbot_plugin_pixiv_re
 
 | 指令 | 权限 | 说明 |
 |---|---|---|
-| `/pixiv sub origin` | 所有人 | 查看当前会话标识，用于在 WebUI 填写推送目标 |
-| `/pixiv sub list` | 所有人 | 列出当前会话的所有订阅及下次推送时间 |
-| `/pixiv sub add <间隔> [参数]` | 管理员 | 创建定时推送订阅 |
-| `/pixiv sub del <订阅ID>` | 管理员 | 删除指定订阅 |
-| `/pixiv sub clear` | 管理员 | 清空当前会话所有订阅 |
+| `/pixivr sub origin` | 所有人 | 查看当前会话标识，用于在 WebUI 填写推送目标 |
+| `/pixivr sub list` | 所有人 | 列出当前会话的所有订阅及下次推送时间 |
+| `/pixivr sub add <间隔> [参数]` | 管理员 | 创建定时推送订阅 |
+| `/pixivr sub del <订阅ID>` | 管理员 | 删除指定订阅 |
+| `/pixivr sub clear` | 管理员 | 清空当前会话所有订阅 |
 
-`/pixiv sub add` 间隔格式：`30m` / `2h` / `1d` / `7d` / `2w`（最小 10 分钟）
+`/pixivr sub add` 间隔格式：`30m` / `2h` / `1d` / `7d` / `2w`（最小 10 分钟）
 
-`/pixiv sub add` 参数与 `/pixiv search` 相同（`-t` `-e` `-a` `-n` `-c`），无需 `-p`。
+`/pixivr sub add` 参数与 `/pixivr search` 相同（`-t` `-e` `-a` `-n` `-c`），无需 `-p`。
 
 示例：
 ```
-/pixiv sub add 6h                          每 6 小时内随机推送 1 张
-/pixiv sub add 1d -t girl -t solo -n 2     每天随机推送 2 张含 girl+solo 标签的图
-/pixiv sub add 12h -a 12345 -c 7d          按画师推送，7 天冷却防重复
+/pixivr sub add 6h                          每 6 小时内随机推送 1 张
+/pixivr sub add 1d -t girl -t solo -n 2     每天随机推送 2 张含 girl+solo 标签的图
+/pixivr sub add 12h -a 12345 -c 7d          按画师推送，7 天冷却防重复
 ```
 
 ### 在 WebUI 中管理订阅
 
-1. 在目标群/私聊中发送 `/pixiv sub origin`，获取会话标识字符串
+1. 在目标群/私聊中发送 `/pixivr sub origin`，获取会话标识字符串
 2. 进入 AstrBot WebUI → 插件配置 → 本插件 → `subscriptions`
 3. 点击添加，填写会话标识和推送参数
 4. 保存后立即生效，无需重启

@@ -90,7 +90,7 @@ class PixivApiClient:
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(connect=3, total=15)) as resp:
                     if resp.status == 404:
                         raise PixivNoMatchError("没有找到匹配的图片")
                     if resp.status == 400:
@@ -101,7 +101,7 @@ class PixivApiClient:
 
                     data = await resp.json()
         except (aiohttp.ClientConnectionError, aiohttp.ClientConnectorError) as e:
-            raise PixivApiError(f"无法连接到图片服务，请检查 api_base_url 配置: {e}") from e
+            raise PixivApiError(f"无法连接到图片服务，请检查 api_base_url 配置（注意 http/https 协议和端口）: {e}") from e
         except aiohttp.ClientError as e:
             raise PixivApiError(f"网络请求失败: {e}") from e
 
