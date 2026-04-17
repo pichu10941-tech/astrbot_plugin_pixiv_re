@@ -35,6 +35,12 @@
     "default": true,
     "hint": "返回多张图片时使用合并转发（每张图独立节点）。仅 OneBot v11 平台支持，其他平台会自动降级为普通发送。可在指令中用 -m 临时覆盖此设置。"
   },
+  "exclude_r18": {
+    "description": "全局排除 R-18 内容",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后自动在所有请求中追加排除 R-18 和 R-18G 标签，对指令查询和定时推送均生效。"
+  },
   "subscriptions": {
     "description": "定时推送订阅列表",
     "type": "template_list",

@@ -2,5 +2,5 @@ name: astrbot_pixiv_re
 display_name: Pixiv 本地图库
 desc: 从本地 Pixiv 图库随机获取图片，支持按标签、画师、作品ID等条件筛选
 version: 0.1.0
-author: ""
-repo: ""
+author: pichu10941-tech
+repo: https://github.com/pichu10941-tech/astrbot_plugin_pixiv_re

@@ -27,6 +27,7 @@ class Main(Star):
         self._default_cooldown: str = config.get("default_cooldown", "1d")
         self._show_info: bool = bool(config.get("show_info", True))
         self._use_forward: bool = bool(config.get("use_forward", True))
+        self._exclude_r18: bool = bool(config.get("exclude_r18", True))
 
         self._sub_manager = SubscriptionManager(
             config=config,
@@ -370,6 +371,11 @@ class Main(Star):
         if cooldown is None:
             cooldown = self._default_cooldown or None
 
+        # 全局 R-18 过滤：利用 LIKE 模糊匹配，R-18 可同时匹配 R-18 和 R-18G
+        if self._exclude_r18:
+            if "R-18" not in (exclude_tags or []):
+                exclude_tags = list(exclude_tags or []) + ["R-18"]
+
         try:
             result = await self._client.fetch(
                 pid=pid,
@@ -408,11 +414,16 @@ class Main(Star):
 
     async def _scheduled_push(self, sub: Subscription) -> None:
         cooldown = sub.cooldown or None
+
+        exclude_tags = list(sub.exclude_tags) if sub.exclude_tags else []
+        if self._exclude_r18:
+            if "R-18" not in exclude_tags:
+                exclude_tags.append("R-18")
         try:
             result = await self._client.fetch(
                 author_id=sub.author_id,
                 tags=sub.tags or None,
-                exclude_tags=sub.exclude_tags or None,
+                exclude_tags=exclude_tags or None,
                 count=sub.count,
                 cooldown=cooldown,
             )
