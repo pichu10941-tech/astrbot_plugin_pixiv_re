@@ -29,6 +29,12 @@
     "default": true,
     "hint": "开启后在图片下方附带 Pixiv ID、画师名、匹配数量等信息"
   },
+  "use_forward": {
+    "description": "多图时使用合并转发",
+    "type": "bool",
+    "default": true,
+    "hint": "返回多张图片时使用合并转发（每张图独立节点）。仅 OneBot v11 平台支持，其他平台会自动降级为普通发送。可在指令中用 -m 临时覆盖此设置。"
+  },
   "subscriptions": {
     "description": "定时推送订阅列表",
     "type": "template_list",

@@ -26,6 +26,7 @@ class Main(Star):
         self._default_count: int = int(config.get("default_count", 1))
         self._default_cooldown: str = config.get("default_cooldown", "1d")
         self._show_info: bool = bool(config.get("show_info", True))
+        self._use_forward: bool = bool(config.get("use_forward", True))
 
         self._sub_manager = SubscriptionManager(
             config=config,
@@ -63,10 +64,11 @@ class Main(Star):
     # ------------------------------------------------------------------ #
 
     @pixiv.command("random")
-    async def cmd_random(self, event: AstrMessageEvent, count: int = 0):
-        """随机获取图片。用法：/pixiv random [数量]"""
+    async def cmd_random(self, event: AstrMessageEvent, count: int = 0, merge: str = ""):
+        """随机获取图片。用法：/pixiv random [数量] [-m]"""
         n = count if count > 0 else self._default_count
-        await self._send_fetch(event, count=n)
+        use_merge = True if merge in ("-m", "--merge") else (False if merge else None)
+        await self._send_fetch(event, count=n, use_merge=use_merge)
 
     # ------------------------------------------------------------------ #
     # /pixiv tag <tag1> [tag2 ...] [count]
@@ -74,16 +76,22 @@ class Main(Star):
 
     @pixiv.command("tag")
     async def cmd_tag(self, event: AstrMessageEvent):
-        """按标签搜索图片。用法：/pixiv tag <标签1> [标签2 ...] [数量]"""
+        """按标签搜索图片。用法：/pixiv tag <标签1> [标签2 ...] [数量] [-m]"""
         args = event.message_str.strip().split()
         args = args[2:] if len(args) > 2 else []
 
         if not args:
-            yield event.plain_result("请提供至少一个标签。用法：/pixiv tag <标签1> [标签2 ...] [数量]")
+            yield event.plain_result("请提供至少一个标签。用法：/pixiv tag <标签1> [标签2 ...] [数量] [-m]")
             return
 
+        # 提取 -m 标志
+        use_merge: bool | None = None
+        if "-m" in args or "--merge" in args:
+            use_merge = True
+            args = [a for a in args if a not in ("-m", "--merge")]
+
         count = self._default_count
-        if args[-1].isdigit():
+        if args and args[-1].isdigit():
             count = int(args[-1])
             args = args[:-1]
 
@@ -91,17 +99,18 @@ class Main(Star):
             yield event.plain_result("请提供至少一个标签。")
             return
 
-        await self._send_fetch(event, tags=args, count=count)
+        await self._send_fetch(event, tags=args, count=count, use_merge=use_merge)
 
     # ------------------------------------------------------------------ #
     # /pixiv author <author_id> [count]
     # ------------------------------------------------------------------ #
 
     @pixiv.command("author")
-    async def cmd_author(self, event: AstrMessageEvent, author_id: int, count: int = 0):
-        """按画师 ID 搜索图片。用法：/pixiv author <画师ID> [数量]"""
+    async def cmd_author(self, event: AstrMessageEvent, author_id: int, count: int = 0, merge: str = ""):
+        """按画师 ID 搜索图片。用法：/pixiv author <画师ID> [数量] [-m]"""
         n = count if count > 0 else self._default_count
-        await self._send_fetch(event, author_id=author_id, count=n)
+        use_merge = True if merge in ("-m", "--merge") else (False if merge else None)
+        await self._send_fetch(event, author_id=author_id, count=n, use_merge=use_merge)
 
     # ------------------------------------------------------------------ #
     # /pixiv pid <pid> [page]
@@ -118,7 +127,7 @@ class Main(Star):
 
     @pixiv.command("search")
     async def cmd_search(self, event: AstrMessageEvent):
-        """高级搜索。用法：/pixiv search [-t 标签] [-e 排除标签] [-a 画师ID] [-n 数量] [-p 页码] [-c 冷却]"""
+        """高级搜索。用法：/pixiv search [-t 标签] [-e 排除标签] [-a 画师ID] [-n 数量] [-p 页码] [-c 冷却] [-m]"""
         args = event.message_str.strip().split()[2:]
 
         tags: list[str] = []
@@ -127,11 +136,14 @@ class Main(Star):
         count = self._default_count
         page: int | None = None
         cooldown: str | None = self._default_cooldown or None
+        use_merge: bool | None = None
 
         i = 0
         while i < len(args):
             flag = args[i]
-            if flag in ("-t", "--tag") and i + 1 < len(args):
+            if flag in ("-m", "--merge"):
+                use_merge = True; i += 1
+            elif flag in ("-t", "--tag") and i + 1 < len(args):
                 tags.append(args[i + 1]); i += 2
             elif flag in ("-e", "--exclude") and i + 1 < len(args):
                 exclude_tags.append(args[i + 1]); i += 2
@@ -169,6 +181,7 @@ class Main(Star):
             page=page,
             count=count,
             cooldown=cooldown,
+            use_merge=use_merge,
         )
 
     # ------------------------------------------------------------------ #
@@ -301,7 +314,7 @@ class Main(Star):
     # ------------------------------------------------------------------ #
 
     def _build_chain(self, result: FetchResult) -> list:
-        """将 FetchResult 转换为消息链组件列表。"""
+        """将 FetchResult 转换为消息链组件列表（普通发送）。"""
         chain: list = []
         for item in result.items:
             chain.append(Comp.Image.fromURL(item.image_url))
@@ -319,6 +332,25 @@ class Main(Star):
 
         return chain
 
+    def _build_forward_nodes(self, result: FetchResult) -> list:
+        """将 FetchResult 转换为合并转发节点列表，每张图独立一个 Node。"""
+        nodes: list = []
+        for item in result.items:
+            content: list = [Comp.Image.fromURL(item.image_url)]
+            if self._show_info:
+                info = f"Pixiv ID: {item.illust_id}"
+                if item.author_name:
+                    info += f" | 画师: {item.author_name}"
+                content.append(Comp.Plain(info))
+            nodes.append(Comp.Node(content=content))
+
+        # 最后追加一个汇总节点
+        if self._show_info and len(result.items) > 1:
+            summary = f"共 {len(result.items)} 张 | 匹配: {result.total_matched} 张"
+            nodes.append(Comp.Node(content=[Comp.Plain(summary)]))
+
+        return nodes
+
     # ------------------------------------------------------------------ #
     # 内部：响应指令的图片发送
     # ------------------------------------------------------------------ #
@@ -333,6 +365,7 @@ class Main(Star):
         page: int | None = None,
         count: int = 1,
         cooldown: str | None = None,
+        use_merge: bool | None = None,
     ) -> None:
         if cooldown is None:
             cooldown = self._default_cooldown or None
@@ -362,7 +395,12 @@ class Main(Star):
             await event.send(event.plain_result("没有找到匹配的图片"))
             return
 
-        await event.send(event.chain_result(self._build_chain(result)))
+        # use_merge=None 时跟随配置；单张图片不走合并转发
+        should_forward = (use_merge if use_merge is not None else self._use_forward)
+        if should_forward and len(result.items) > 1:
+            await event.send(event.chain_result(self._build_forward_nodes(result)))
+        else:
+            await event.send(event.chain_result(self._build_chain(result)))
 
     # ------------------------------------------------------------------ #
     # 内部：定时推送回调（由 Scheduler 调用）
@@ -388,19 +426,31 @@ class Main(Star):
         if not result.items:
             return
 
-        chain = MessageChain()
-        for item in result.items:
-            chain.file_image(item.image_url)
-        if self._show_info:
-            if len(result.items) == 1:
-                item = result.items[0]
-                info = f"Pixiv ID: {item.illust_id}"
-                if item.author_name:
-                    info += f" | 画师: {item.author_name}"
-                info += f" | 匹配: {result.total_matched} 张"
-            else:
-                info = f"共 {len(result.items)} 张 | 匹配: {result.total_matched} 张"
-            chain.message(info)
+        # 多图且开启合并转发时，使用 Node 列表；否则逐张拼入 MessageChain
+        if self._use_forward and len(result.items) > 1:
+            nodes = self._build_forward_nodes(result)
+            chain = MessageChain()
+            for node in nodes:
+                # Node 内容序列化为图片 + 文字
+                for comp in node.content:
+                    if isinstance(comp, Comp.Image):
+                        chain.file_image(comp.url or "")
+                    elif isinstance(comp, Comp.Plain):
+                        chain.message(comp.text)
+        else:
+            chain = MessageChain()
+            for item in result.items:
+                chain.file_image(item.image_url)
+            if self._show_info:
+                if len(result.items) == 1:
+                    item = result.items[0]
+                    info = f"Pixiv ID: {item.illust_id}"
+                    if item.author_name:
+                        info += f" | 画师: {item.author_name}"
+                    info += f" | 匹配: {result.total_matched} 张"
+                else:
+                    info = f"共 {len(result.items)} 张 | 匹配: {result.total_matched} 张"
+                chain.message(info)
 
         await self.context.send_message(sub.unified_msg_origin, chain)
         logger.info(f"[pixiv scheduler] 订阅 {sub.sub_id} 推送完成，发送 {len(result.items)} 张图片")

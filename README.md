@@ -26,6 +26,7 @@ git clone <仓库地址> astrbot_plugin_pixiv_re
 | `default_cooldown` | `1d` | 默认防重复冷却时长，留空不启用 |
 | `use_thumbnail` | `false` | 是否使用缩略图 |
 | `show_info` | `true` | 是否在图片下方附带作品信息 |
+| `use_forward` | `true` | 多图时使用合并转发（仅 OneBot v11 支持，其他平台自动降级） |
 | `subscriptions` | `[]` | 定时推送订阅列表（可在 WebUI 直接管理） |
 
 ## 指令
@@ -51,12 +52,23 @@ git clone <仓库地址> astrbot_plugin_pixiv_re
 -n  <数量>      返回数量
 -p  <页码>      指定页码
 -c  <冷却>      冷却时长，如 12h / 1d
+-m              强制使用合并转发（多图时生效）
 ```
 
 示例：
 ```
 /pixiv search -t girl -t solo -e nsfw -n 3 -c 12h
+/pixiv search -t girl -n 5 -m      # 强制合并转发
 ```
+
+### 合并转发
+
+返回多张图片时（count > 1），若配置 `use_forward = true` 或指令附带 `-m` 参数，将以合并转发形式发送：
+
+- 每张图片独立一个节点，节点内包含图片和作品信息
+- 最后附加一个汇总节点（共 N 张 | 匹配 M 张）
+- `-m` 参数优先级高于配置开关，可临时覆盖
+- 仅 **OneBot v11**（QQ 个人号等）平台支持合并转发，其他平台会自动降级为普通发送
 
 ### 定时推送订阅
 
