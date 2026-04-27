@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass, field
 
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
@@ -27,6 +28,34 @@ from .scheduler import Scheduler, Subscription, SubscriptionManager, _short_id, 
 
 
 _SAVE_IMAGE_TIMEOUT_SECONDS = 60
+_SAVE_IMAGE_DEBOUNCE_SECONDS = 5
+
+
+@dataclass
+class SaveImageReplySummary:
+    total_count: int
+    saved_count: int
+    target_dir: str
+    preview_files: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SaveImageReplyBatch:
+    total_count: int = 0
+    saved_count: int = 0
+    target_dir: str = ""
+    preview_files: list[str] = field(default_factory=list)
+
+    def merge(self, summary: SaveImageReplySummary) -> None:
+        self.total_count += summary.total_count
+        self.saved_count += summary.saved_count
+        if summary.target_dir:
+            self.target_dir = summary.target_dir
+        for item in summary.preview_files:
+            if item not in self.preview_files:
+                self.preview_files.append(item)
+            if len(self.preview_files) >= 3:
+                break
 
 
 class Main(Star):
@@ -54,6 +83,8 @@ class Main(Star):
         )
         self._save_image_sessions: dict[str, float] = {}
         self._save_image_timeout_tasks: dict[str, asyncio.Task] = {}
+        self._save_image_reply_batches: dict[str, SaveImageReplyBatch] = {}
+        self._save_image_reply_tasks: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -69,6 +100,9 @@ class Main(Star):
         for task in self._save_image_timeout_tasks.values():
             task.cancel()
         self._save_image_timeout_tasks.clear()
+        for task in self._save_image_reply_tasks.values():
+            task.cancel()
+        self._save_image_reply_tasks.clear()
         logger.info("[pixiv] 定时推送调度器已停止")
 
     # ------------------------------------------------------------------ #
@@ -101,6 +135,7 @@ class Main(Star):
             return
 
         if text == "结束":
+            await self._flush_save_image_reply(origin)
             self._clear_save_image_session(origin)
             yield event.plain_result("已退出存图状态。")
             event.stop_event()
@@ -111,11 +146,12 @@ class Main(Star):
             yield event.plain_result("当前处于存图状态，请发送图片；发送“结束”可退出。")
             event.stop_event()
             return
-
+        
         self._set_save_image_session(origin)
-        handled = await self._handle_save_images(event, image_segments)
-        if handled:
-            event.stop_event()
+        summary = await self._handle_save_images(event, image_segments)
+        if summary is not None:
+            self._queue_save_image_reply(origin, summary)
+        event.stop_event()
 
     # ------------------------------------------------------------------ #
     # 指令组：pixivr
@@ -432,6 +468,12 @@ class Main(Star):
         if task and not task.done():
             task.cancel()
 
+    def _clear_save_image_reply(self, unified_msg_origin: str) -> None:
+        self._save_image_reply_batches.pop(unified_msg_origin, None)
+        task = self._save_image_reply_tasks.pop(unified_msg_origin, None)
+        if task and not task.done():
+            task.cancel()
+
     def _get_save_image_session(self, unified_msg_origin: str) -> tuple[bool, bool]:
         expires_at = self._save_image_sessions.get(unified_msg_origin)
         if expires_at is None:
@@ -447,6 +489,7 @@ class Main(Star):
             expires_at = self._save_image_sessions.get(unified_msg_origin)
             if expires_at is None or expires_at > time.time():
                 return
+            await self._flush_save_image_reply(unified_msg_origin)
             self._save_image_sessions.pop(unified_msg_origin, None)
             self._save_image_timeout_tasks.pop(unified_msg_origin, None)
 
@@ -457,6 +500,43 @@ class Main(Star):
             raise
         except Exception as e:
             logger.error(f"[pixiv save] 存图超时通知失败: {e}")
+
+    def _queue_save_image_reply(self, unified_msg_origin: str, summary: SaveImageReplySummary) -> None:
+        batch = self._save_image_reply_batches.get(unified_msg_origin)
+        if batch is None:
+            batch = SaveImageReplyBatch()
+            self._save_image_reply_batches[unified_msg_origin] = batch
+        batch.merge(summary)
+
+        task = self._save_image_reply_tasks.get(unified_msg_origin)
+        if task and not task.done():
+            task.cancel()
+        self._save_image_reply_tasks[unified_msg_origin] = asyncio.create_task(
+            self._save_image_reply_watch(unified_msg_origin)
+        )
+
+    async def _save_image_reply_watch(self, unified_msg_origin: str) -> None:
+        try:
+            await asyncio.sleep(_SAVE_IMAGE_DEBOUNCE_SECONDS)
+            await self._flush_save_image_reply(unified_msg_origin)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"[pixiv save] 存图汇总回复失败: {e}")
+
+    async def _flush_save_image_reply(self, unified_msg_origin: str) -> None:
+        batch = self._save_image_reply_batches.pop(unified_msg_origin, None)
+        task = self._save_image_reply_tasks.pop(unified_msg_origin, None)
+        current_task = asyncio.current_task()
+        if task and task is not current_task and not task.done():
+            task.cancel()
+
+        if batch is None or batch.total_count <= 0:
+            return
+
+        chain = MessageChain()
+        chain.message(self._format_save_image_reply_batch(batch))
+        await self.context.send_message(unified_msg_origin, chain)
 
     def _collect_image_segments(self, event: AstrMessageEvent) -> list:
         message = getattr(getattr(event, "message_obj", None), "message", None) or []
@@ -587,19 +667,30 @@ class Main(Star):
         walk(raw_message)
         return candidates
 
-    def _format_upload_result(self, total_count: int, result: UploadResult) -> str:
+    @staticmethod
+    def _build_save_image_reply_summary(total_count: int, result: UploadResult) -> SaveImageReplySummary:
+        preview_files = []
+        for item in result.items[:3]:
+            preview_files.append(item.filepath or item.filename)
+        return SaveImageReplySummary(
+            total_count=total_count,
+            saved_count=result.saved_count,
+            target_dir=result.target_dir,
+            preview_files=preview_files,
+        )
+
+    @staticmethod
+    def _format_save_image_reply_batch(batch: SaveImageReplyBatch) -> str:
         lines = [
-            f"本次收到 {total_count} 张图片，成功保存 {result.saved_count} 张。",
-            f"目标目录：{result.target_dir}",
+            f"{_SAVE_IMAGE_DEBOUNCE_SECONDS} 秒内共收到 {batch.total_count} 张图片，成功保存 {batch.saved_count} 张。",
         ]
-        if result.items:
-            preview = []
-            for item in result.items[:3]:
-                preview.append(item.filepath or item.filename)
-            lines.append(f"示例文件：{'，'.join(preview)}")
+        if batch.target_dir:
+            lines.append(f"目标目录：{batch.target_dir}")
+        if batch.preview_files:
+            lines.append(f"示例文件：{'，'.join(batch.preview_files[:3])}")
         return "\n".join(lines)
 
-    async def _handle_save_images(self, event: AstrMessageEvent, image_segments: list) -> bool:
+    async def _handle_save_images(self, event: AstrMessageEvent, image_segments: list) -> SaveImageReplySummary | None:
         upload_sources = []
 
         for index, segment in enumerate(image_segments, start=1):
@@ -610,24 +701,23 @@ class Main(Star):
                     f"[pixiv save] 图片来源解析失败: segment={type(segment).__name__}, attrs={getattr(segment, '__dict__', None)}"
                 )
                 await event.send(event.plain_result(f"存图失败：{e}"))
-                return True
+                return None
 
         try:
             result = await self._client.upload_images(upload_sources)
         except PixivParamError as e:
             await event.send(event.plain_result(f"存图失败：{e}"))
-            return True
+            return None
         except PixivUploadError as e:
             logger.error(f"[pixiv save] 上传失败: {e}")
             await event.send(event.plain_result(f"存图失败：{e}"))
-            return True
+            return None
         except PixivApiError as e:
             logger.error(f"[pixiv save] API 请求失败: {e}")
             await event.send(event.plain_result(f"存图失败：{e}"))
-            return True
+            return None
 
-        await event.send(event.plain_result(self._format_upload_result(len(image_segments), result)))
-        return True
+        return self._build_save_image_reply_summary(len(image_segments), result)
 
     # ------------------------------------------------------------------ #
     # 内部：响应指令的图片发送
