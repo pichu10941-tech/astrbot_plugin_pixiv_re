@@ -6,13 +6,26 @@ AstrBot 插件：Pixiv 本地图库
 
 from __future__ import annotations
 
+import time
+
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star
 
-from .api_client import FetchResult, PixivApiClient, PixivApiError, PixivNoMatchError, PixivParamError
+from .api_client import (
+    FetchResult,
+    PixivApiClient,
+    PixivApiError,
+    PixivNoMatchError,
+    PixivParamError,
+    PixivUploadError,
+    UploadResult,
+)
 from .scheduler import Scheduler, Subscription, SubscriptionManager, _short_id, parse_interval
+
+
+_SAVE_IMAGE_TIMEOUT_SECONDS = 60
 
 
 class Main(Star):
@@ -38,6 +51,7 @@ class Main(Star):
             manager=self._sub_manager,
             push_cb=self._scheduled_push,
         )
+        self._save_image_sessions: dict[str, float] = {}
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -51,6 +65,52 @@ class Main(Star):
     async def terminate(self) -> None:
         self._scheduler.stop()
         logger.info("[pixiv] 定时推送调度器已停止")
+
+    # ------------------------------------------------------------------ #
+    # 普通消息：存图状态
+    # ------------------------------------------------------------------ #
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_message(self, event: AstrMessageEvent):
+        text = (event.message_str or "").strip()
+        origin = event.unified_msg_origin
+        active, expired = self._get_save_image_session(origin)
+
+        if text == "存图":
+            self._set_save_image_session(origin)
+            yield event.plain_result("已进入存图状态，请在 1 分钟内发送图片；发送“结束”可退出。")
+            event.stop_event()
+            return
+
+        if expired:
+            if text == "结束":
+                yield event.plain_result("存图状态已超时退出，如需继续请重新发送“存图”。")
+                event.stop_event()
+                return
+            if self._has_image_segments(event):
+                yield event.plain_result("存图状态已超时退出，请先发送“存图”再上传图片。")
+                event.stop_event()
+                return
+
+        if not active:
+            return
+
+        if text == "结束":
+            self._clear_save_image_session(origin)
+            yield event.plain_result("已退出存图状态。")
+            event.stop_event()
+            return
+
+        image_segments = self._collect_image_segments(event)
+        if not image_segments:
+            yield event.plain_result("当前处于存图状态，请发送图片；发送“结束”可退出。")
+            event.stop_event()
+            return
+
+        self._set_save_image_session(origin)
+        handled = await self._handle_save_images(event, image_segments)
+        if handled:
+            event.stop_event()
 
     # ------------------------------------------------------------------ #
     # 指令组：pixivr
@@ -351,6 +411,178 @@ class Main(Star):
             nodes.append(Comp.Node(uin=0, name="Pixiv", content=[Comp.Plain(summary)]))
 
         return nodes
+
+    def _set_save_image_session(self, unified_msg_origin: str) -> None:
+        self._save_image_sessions[unified_msg_origin] = time.time() + _SAVE_IMAGE_TIMEOUT_SECONDS
+
+    def _clear_save_image_session(self, unified_msg_origin: str) -> None:
+        self._save_image_sessions.pop(unified_msg_origin, None)
+
+    def _get_save_image_session(self, unified_msg_origin: str) -> tuple[bool, bool]:
+        expires_at = self._save_image_sessions.get(unified_msg_origin)
+        if expires_at is None:
+            return False, False
+        if expires_at < time.time():
+            self._clear_save_image_session(unified_msg_origin)
+            return False, True
+        return True, False
+
+    def _collect_image_segments(self, event: AstrMessageEvent) -> list:
+        message = getattr(getattr(event, "message_obj", None), "message", None) or []
+        image_segments = []
+        for segment in message:
+            if isinstance(segment, Comp.Image) or type(segment).__name__.lower() == "image":
+                image_segments.append(segment)
+        return image_segments
+
+    def _has_image_segments(self, event: AstrMessageEvent) -> bool:
+        return bool(self._collect_image_segments(event))
+
+    @staticmethod
+    def _looks_like_url(value: str) -> bool:
+        return value.startswith("http://") or value.startswith("https://")
+
+    @staticmethod
+    def _looks_like_file_uri(value: str) -> bool:
+        return value.startswith("file://")
+
+    @staticmethod
+    def _looks_like_base64(value: str) -> bool:
+        return value.startswith("base64://")
+
+    @staticmethod
+    def _guess_segment_filename(attrs: dict, preferred_value: str | None = None) -> str | None:
+        filename = attrs.get("filename")
+        if isinstance(filename, str) and filename.strip():
+            return filename.strip()
+
+        if isinstance(preferred_value, str) and preferred_value.strip():
+            value = preferred_value.strip()
+            if value.startswith(("http://", "https://", "file://")):
+                path_name = value.rsplit("/", 1)[-1].split("?", 1)[0]
+                return path_name or None
+
+        path = attrs.get("path")
+        if isinstance(path, str) and path.strip():
+            return path.strip().rsplit("/", 1)[-1].rsplit("\\", 1)[-1] or None
+
+        return None
+
+    async def _resolve_image_source(self, source_value: str, filename: str | None):
+        if self._looks_like_url(source_value):
+            return await self._client.build_upload_source_from_url(source_value, filename=filename)
+        if self._looks_like_file_uri(source_value):
+            return await self._client.build_upload_source_from_file_uri(source_value, filename=filename)
+        if self._looks_like_base64(source_value):
+            return await self._client.build_upload_source_from_base64(source_value, filename=filename)
+        raise PixivUploadError(f"暂不支持的图片来源协议: {source_value[:32]}")
+
+    async def _build_upload_source_from_segment(self, event: AstrMessageEvent, segment, index: int):
+        attrs = getattr(segment, "__dict__", {}) or {}
+        file_raw = attrs.get("file")
+        url_raw = attrs.get("url")
+        path_raw = attrs.get("path")
+        file_value = file_raw.strip() if isinstance(file_raw, str) else ""
+        url_value = url_raw.strip() if isinstance(url_raw, str) else ""
+        path_value = path_raw.strip() if isinstance(path_raw, str) else ""
+
+        direct_candidates: list[tuple[str, str]] = []
+        if file_value:
+            direct_candidates.append(("file", file_value))
+        if url_value:
+            direct_candidates.append(("url", url_value))
+        if path_value:
+            direct_candidates.append(("path", path_value))
+
+        for key, value in direct_candidates:
+            filename = self._guess_segment_filename(attrs, value)
+            if key == "path":
+                try:
+                    return await self._client.build_upload_source_from_file(value, filename=filename)
+                except PixivUploadError:
+                    continue
+            try:
+                return await self._resolve_image_source(value, filename=filename)
+            except PixivUploadError:
+                if key != "file":
+                    continue
+                raise
+
+        raw_message = getattr(getattr(event, "message_obj", None), "raw_message", None)
+
+        for key, value in self._extract_raw_message_candidates(raw_message):
+            filename = self._guess_segment_filename(attrs, value)
+            try:
+                if key.endswith("path") and not value.startswith("file://"):
+                    return await self._client.build_upload_source_from_file(value, filename=filename)
+                return await self._resolve_image_source(value, filename=filename)
+            except PixivUploadError:
+                continue
+
+        raise PixivUploadError(
+            f"第 {index} 张图片缺少可用来源，请查看 AstrBot 日志确认 file/url/path 字段。"
+        )
+
+    def _extract_raw_message_candidates(self, raw_message) -> list[tuple[str, str]]:
+        candidates: list[tuple[str, str]] = []
+
+        def walk(value, prefix: str = "") -> None:
+            if isinstance(value, dict):
+                for key, sub_value in value.items():
+                    next_prefix = f"{prefix}.{key}" if prefix else str(key)
+                    if isinstance(sub_value, str) and sub_value.strip():
+                        if key in {"url", "file", "path", "src"}:
+                            candidates.append((next_prefix, sub_value.strip()))
+                    elif isinstance(sub_value, (dict, list, tuple)):
+                        walk(sub_value, next_prefix)
+            elif isinstance(value, (list, tuple)):
+                for idx, item in enumerate(value):
+                    walk(item, f"{prefix}[{idx}]")
+
+        walk(raw_message)
+        return candidates
+
+    def _format_upload_result(self, total_count: int, result: UploadResult) -> str:
+        lines = [
+            f"本次收到 {total_count} 张图片，成功保存 {result.saved_count} 张。",
+            f"目标目录：{result.target_dir}",
+        ]
+        if result.items:
+            preview = []
+            for item in result.items[:3]:
+                preview.append(item.filepath or item.filename)
+            lines.append(f"示例文件：{'，'.join(preview)}")
+        return "\n".join(lines)
+
+    async def _handle_save_images(self, event: AstrMessageEvent, image_segments: list) -> bool:
+        upload_sources = []
+
+        for index, segment in enumerate(image_segments, start=1):
+            try:
+                upload_sources.append(await self._build_upload_source_from_segment(event, segment, index))
+            except PixivUploadError as e:
+                logger.warning(
+                    f"[pixiv save] 图片来源解析失败: segment={type(segment).__name__}, attrs={getattr(segment, '__dict__', None)}"
+                )
+                await event.send(event.plain_result(f"存图失败：{e}"))
+                return True
+
+        try:
+            result = await self._client.upload_images(upload_sources)
+        except PixivParamError as e:
+            await event.send(event.plain_result(f"存图失败：{e}"))
+            return True
+        except PixivUploadError as e:
+            logger.error(f"[pixiv save] 上传失败: {e}")
+            await event.send(event.plain_result(f"存图失败：{e}"))
+            return True
+        except PixivApiError as e:
+            logger.error(f"[pixiv save] API 请求失败: {e}")
+            await event.send(event.plain_result(f"存图失败：{e}"))
+            return True
+
+        await event.send(event.plain_result(self._format_upload_result(len(image_segments), result)))
+        return True
 
     # ------------------------------------------------------------------ #
     # 内部：响应指令的图片发送

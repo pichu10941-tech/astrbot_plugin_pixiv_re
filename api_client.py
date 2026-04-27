@@ -1,11 +1,15 @@
 """
 Pixiv 本地图库 API 客户端
-封装 GET /api/fetch 接口，处理请求、响应解析和错误。
+封装 GET /api/fetch 与 POST /api/upload/image 接口。
 """
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
+import mimetypes
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 
 class PixivApiError(Exception):
@@ -18,6 +22,10 @@ class PixivNoMatchError(PixivApiError):
 
 class PixivParamError(PixivApiError):
     """参数错误（400）"""
+
+
+class PixivUploadError(PixivApiError):
+    """上传失败"""
 
 
 @dataclass
@@ -35,6 +43,29 @@ class FetchResult:
     items: list[ImageItem] = field(default_factory=list)
 
 
+@dataclass
+class UploadSource:
+    filename: str
+    data: bytes
+    content_type: str
+
+
+@dataclass
+class UploadItem:
+    filename: str
+    filepath: str
+    size: int
+    status: str
+
+
+@dataclass
+class UploadResult:
+    message: str
+    saved_count: int
+    target_dir: str
+    items: list[UploadItem] = field(default_factory=list)
+
+
 class PixivApiClient:
     def __init__(self, base_url: str, use_thumbnail: bool = False) -> None:
         # 去除末尾斜杠，统一格式
@@ -47,6 +78,138 @@ class PixivApiClient:
         if self._use_thumbnail:
             path = path.replace("images/file", "images/thumb", 1)
         return f"{self._base_url}/{path}"
+
+    @staticmethod
+    def _guess_filename_from_url(url: str) -> str:
+        parsed = urlparse(url)
+        name = Path(parsed.path).name
+        return name or "image"
+
+    @staticmethod
+    def _guess_content_type(filename: str, default: str = "application/octet-stream") -> str:
+        guessed, _ = mimetypes.guess_type(filename)
+        return guessed or default
+
+    @staticmethod
+    def _normalize_filesystem_path(file_uri: str) -> str:
+        parsed = urlparse(file_uri)
+        if parsed.scheme != "file":
+            raise PixivUploadError(f"不是有效的 file URI: {file_uri}")
+
+        path = unquote(parsed.path or "")
+        if not path:
+            raise PixivUploadError("file URI 中缺少文件路径")
+        if parsed.netloc and parsed.netloc not in ("", "localhost"):
+            path = f"//{parsed.netloc}{path}"
+        return path
+
+    async def build_upload_source_from_file_uri(self, file_uri: str, filename: str | None = None) -> UploadSource:
+        file_path = self._normalize_filesystem_path(file_uri)
+        return await self.build_upload_source_from_file(file_path, filename=filename)
+
+    async def build_upload_source_from_base64(self, base64_value: str, filename: str | None = None) -> UploadSource:
+        payload = base64_value[len("base64://") :] if base64_value.startswith("base64://") else base64_value
+        if not payload:
+            raise PixivUploadError("base64 图片数据为空")
+
+        try:
+            data = base64.b64decode(payload, validate=True)
+        except Exception as e:
+            raise PixivUploadError(f"base64 图片数据解码失败: {e}") from e
+
+        if not data:
+            raise PixivUploadError("base64 图片数据为空")
+
+        final_name = filename or "image"
+        return UploadSource(
+            filename=final_name,
+            data=data,
+            content_type=self._guess_content_type(final_name),
+        )
+
+    async def build_upload_source_from_url(self, url: str, filename: str | None = None) -> UploadSource:
+        import aiohttp
+
+        final_name = filename or self._guess_filename_from_url(url)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(connect=5, total=30)) as resp:
+                    if resp.status != 200:
+                        raise PixivUploadError(f"下载图片失败，状态码: {resp.status}")
+                    data = await resp.read()
+                    if not data:
+                        raise PixivUploadError("下载到的图片为空")
+                    content_type = resp.headers.get("Content-Type") or self._guess_content_type(final_name)
+        except (aiohttp.ClientConnectionError, aiohttp.ClientConnectorError) as e:
+            raise PixivUploadError(f"下载图片失败，无法连接到图片地址: {e}") from e
+        except aiohttp.ClientError as e:
+            raise PixivUploadError(f"下载图片失败: {e}") from e
+
+        return UploadSource(filename=final_name, data=data, content_type=content_type)
+
+    async def build_upload_source_from_file(self, file_path: str, filename: str | None = None) -> UploadSource:
+        path = Path(file_path)
+        if not path.is_file():
+            raise PixivUploadError(f"图片文件不存在: {file_path}")
+
+        data = path.read_bytes()
+        if not data:
+            raise PixivUploadError(f"图片文件为空: {file_path}")
+
+        final_name = filename or path.name or "image"
+        return UploadSource(
+            filename=final_name,
+            data=data,
+            content_type=self._guess_content_type(final_name),
+        )
+
+    async def upload_images(self, sources: list[UploadSource]) -> UploadResult:
+        import aiohttp
+
+        if not sources:
+            raise PixivParamError("至少上传一张图片")
+
+        form = aiohttp.FormData()
+        for source in sources:
+            form.add_field(
+                "files",
+                source.data,
+                filename=source.filename,
+                content_type=source.content_type,
+            )
+
+        url = f"{self._base_url}/api/upload/image"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(connect=5, total=60)) as resp:
+                    if resp.status == 400:
+                        data = await resp.json()
+                        raise PixivParamError(data.get("detail", "参数错误"))
+                    if resp.status != 200:
+                        raise PixivUploadError(f"上传接口返回异常状态码: {resp.status}")
+
+                    data = await resp.json()
+        except (aiohttp.ClientConnectionError, aiohttp.ClientConnectorError) as e:
+            raise PixivUploadError(f"无法连接到图片服务，请检查 api_base_url 配置（注意 http/https 协议和端口）: {e}") from e
+        except aiohttp.ClientError as e:
+            raise PixivUploadError(f"上传请求失败: {e}") from e
+
+        items = [
+            UploadItem(
+                filename=item.get("filename", ""),
+                filepath=item.get("filepath", ""),
+                size=int(item.get("size", 0)),
+                status=item.get("status", ""),
+            )
+            for item in data.get("items", [])
+            if isinstance(item, dict)
+        ]
+        return UploadResult(
+            message=data.get("message", "上传成功"),
+            saved_count=int(data.get("saved_count", 0)),
+            target_dir=data.get("target_dir", "inbox"),
+            items=items,
+        )
 
     async def fetch(
         self,
