@@ -477,6 +477,13 @@ class Main(Star):
             return await self._client.build_upload_source_from_base64(source_value, filename=filename)
         raise PixivUploadError(f"暂不支持的图片来源协议: {source_value[:32]}")
 
+    def _can_resolve_image_source(self, source_value: str) -> bool:
+        return (
+            self._looks_like_url(source_value)
+            or self._looks_like_file_uri(source_value)
+            or self._looks_like_base64(source_value)
+        )
+
     async def _build_upload_source_from_segment(self, event: AstrMessageEvent, segment, index: int):
         attrs = getattr(segment, "__dict__", {}) or {}
         file_raw = attrs.get("file")
@@ -501,11 +508,11 @@ class Main(Star):
                     return await self._client.build_upload_source_from_file(value, filename=filename)
                 except PixivUploadError:
                     continue
+            if not self._can_resolve_image_source(value):
+                continue
             try:
                 return await self._resolve_image_source(value, filename=filename)
             except PixivUploadError:
-                if key != "file":
-                    continue
                 raise
 
         raw_message = getattr(getattr(event, "message_obj", None), "raw_message", None)
