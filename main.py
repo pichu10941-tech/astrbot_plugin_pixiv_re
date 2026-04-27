@@ -6,6 +6,7 @@ AstrBot 插件：Pixiv 本地图库
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import astrbot.api.message_components as Comp
@@ -52,6 +53,7 @@ class Main(Star):
             push_cb=self._scheduled_push,
         )
         self._save_image_sessions: dict[str, float] = {}
+        self._save_image_timeout_tasks: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -64,6 +66,9 @@ class Main(Star):
 
     async def terminate(self) -> None:
         self._scheduler.stop()
+        for task in self._save_image_timeout_tasks.values():
+            task.cancel()
+        self._save_image_timeout_tasks.clear()
         logger.info("[pixiv] 定时推送调度器已停止")
 
     # ------------------------------------------------------------------ #
@@ -414,9 +419,18 @@ class Main(Star):
 
     def _set_save_image_session(self, unified_msg_origin: str) -> None:
         self._save_image_sessions[unified_msg_origin] = time.time() + _SAVE_IMAGE_TIMEOUT_SECONDS
+        task = self._save_image_timeout_tasks.get(unified_msg_origin)
+        if task and not task.done():
+            task.cancel()
+        self._save_image_timeout_tasks[unified_msg_origin] = asyncio.create_task(
+            self._save_image_timeout_watch(unified_msg_origin)
+        )
 
     def _clear_save_image_session(self, unified_msg_origin: str) -> None:
         self._save_image_sessions.pop(unified_msg_origin, None)
+        task = self._save_image_timeout_tasks.pop(unified_msg_origin, None)
+        if task and not task.done():
+            task.cancel()
 
     def _get_save_image_session(self, unified_msg_origin: str) -> tuple[bool, bool]:
         expires_at = self._save_image_sessions.get(unified_msg_origin)
@@ -426,6 +440,23 @@ class Main(Star):
             self._clear_save_image_session(unified_msg_origin)
             return False, True
         return True, False
+
+    async def _save_image_timeout_watch(self, unified_msg_origin: str) -> None:
+        try:
+            await asyncio.sleep(_SAVE_IMAGE_TIMEOUT_SECONDS)
+            expires_at = self._save_image_sessions.get(unified_msg_origin)
+            if expires_at is None or expires_at > time.time():
+                return
+            self._save_image_sessions.pop(unified_msg_origin, None)
+            self._save_image_timeout_tasks.pop(unified_msg_origin, None)
+
+            chain = MessageChain()
+            chain.message("存图状态已超时退出。")
+            await self.context.send_message(unified_msg_origin, chain)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"[pixiv save] 存图超时通知失败: {e}")
 
     def _collect_image_segments(self, event: AstrMessageEvent) -> list:
         message = getattr(getattr(event, "message_obj", None), "message", None) or []
@@ -455,6 +486,13 @@ class Main(Star):
         filename = attrs.get("filename")
         if isinstance(filename, str) and filename.strip():
             return filename.strip()
+
+        file_value = attrs.get("file")
+        if isinstance(file_value, str) and file_value.strip():
+            raw_file = file_value.strip()
+            basename = raw_file.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].split("?", 1)[0]
+            if "." in basename:
+                return basename or None
 
         if isinstance(preferred_value, str) and preferred_value.strip():
             value = preferred_value.strip()
