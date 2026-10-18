@@ -7,7 +7,6 @@ AstrBot 插件：Pixiv 本地图库
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass, field
 
 import astrbot.api.message_components as Comp
@@ -27,7 +26,6 @@ from .api_client import (
 from .scheduler import Scheduler, Subscription, SubscriptionManager, _short_id, parse_interval
 
 
-_SAVE_IMAGE_TIMEOUT_SECONDS = 60
 _SAVE_IMAGE_DEBOUNCE_SECONDS = 5
 
 
@@ -81,8 +79,6 @@ class Main(Star):
             manager=self._sub_manager,
             push_cb=self._scheduled_push,
         )
-        self._save_image_sessions: dict[str, float] = {}
-        self._save_image_timeout_tasks: dict[str, asyncio.Task] = {}
         self._save_image_reply_batches: dict[str, SaveImageReplyBatch] = {}
         self._save_image_reply_tasks: dict[str, asyncio.Task] = {}
 
@@ -97,60 +93,24 @@ class Main(Star):
 
     async def terminate(self) -> None:
         self._scheduler.stop()
-        for task in self._save_image_timeout_tasks.values():
-            task.cancel()
-        self._save_image_timeout_tasks.clear()
         for task in self._save_image_reply_tasks.values():
             task.cancel()
         self._save_image_reply_tasks.clear()
         logger.info("[pixiv] 定时推送调度器已停止")
 
     # ------------------------------------------------------------------ #
-    # 普通消息：存图状态
+    # 普通消息：自动存图
     # ------------------------------------------------------------------ #
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
-        text = (event.message_str or "").strip()
-        origin = event.unified_msg_origin
-        active, expired = self._get_save_image_session(origin)
-
-        if text == "存图":
-            self._set_save_image_session(origin)
-            yield event.plain_result("已进入存图状态，请在 1 分钟内发送图片；发送“结束”可退出。")
-            event.stop_event()
-            return
-
-        if expired:
-            if text == "结束":
-                yield event.plain_result("存图状态已超时退出，如需继续请重新发送“存图”。")
-                event.stop_event()
-                return
-            if self._has_image_segments(event):
-                yield event.plain_result("存图状态已超时退出，请先发送“存图”再上传图片。")
-                event.stop_event()
-                return
-
-        if not active:
-            return
-
-        if text == "结束":
-            await self._flush_save_image_reply(origin)
-            self._clear_save_image_session(origin)
-            yield event.plain_result("已退出存图状态。")
-            event.stop_event()
-            return
-
         image_segments = self._collect_image_segments(event)
         if not image_segments:
-            yield event.plain_result("当前处于存图状态，请发送图片；发送“结束”可退出。")
-            event.stop_event()
             return
-        
-        self._set_save_image_session(origin)
+
         summary = await self._handle_save_images(event, image_segments)
         if summary is not None:
-            self._queue_save_image_reply(origin, summary)
+            self._queue_save_image_reply(event.unified_msg_origin, summary)
         event.stop_event()
 
     # ------------------------------------------------------------------ #
@@ -452,54 +412,6 @@ class Main(Star):
             nodes.append(Comp.Node(uin=0, name="Pixiv", content=[Comp.Plain(summary)]))
 
         return nodes
-
-    def _set_save_image_session(self, unified_msg_origin: str) -> None:
-        self._save_image_sessions[unified_msg_origin] = time.time() + _SAVE_IMAGE_TIMEOUT_SECONDS
-        task = self._save_image_timeout_tasks.get(unified_msg_origin)
-        if task and not task.done():
-            task.cancel()
-        self._save_image_timeout_tasks[unified_msg_origin] = asyncio.create_task(
-            self._save_image_timeout_watch(unified_msg_origin)
-        )
-
-    def _clear_save_image_session(self, unified_msg_origin: str) -> None:
-        self._save_image_sessions.pop(unified_msg_origin, None)
-        task = self._save_image_timeout_tasks.pop(unified_msg_origin, None)
-        if task and not task.done():
-            task.cancel()
-
-    def _clear_save_image_reply(self, unified_msg_origin: str) -> None:
-        self._save_image_reply_batches.pop(unified_msg_origin, None)
-        task = self._save_image_reply_tasks.pop(unified_msg_origin, None)
-        if task and not task.done():
-            task.cancel()
-
-    def _get_save_image_session(self, unified_msg_origin: str) -> tuple[bool, bool]:
-        expires_at = self._save_image_sessions.get(unified_msg_origin)
-        if expires_at is None:
-            return False, False
-        if expires_at < time.time():
-            self._clear_save_image_session(unified_msg_origin)
-            return False, True
-        return True, False
-
-    async def _save_image_timeout_watch(self, unified_msg_origin: str) -> None:
-        try:
-            await asyncio.sleep(_SAVE_IMAGE_TIMEOUT_SECONDS)
-            expires_at = self._save_image_sessions.get(unified_msg_origin)
-            if expires_at is None or expires_at > time.time():
-                return
-            await self._flush_save_image_reply(unified_msg_origin)
-            self._save_image_sessions.pop(unified_msg_origin, None)
-            self._save_image_timeout_tasks.pop(unified_msg_origin, None)
-
-            chain = MessageChain()
-            chain.message("存图状态已超时退出。")
-            await self.context.send_message(unified_msg_origin, chain)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"[pixiv save] 存图超时通知失败: {e}")
 
     def _queue_save_image_reply(self, unified_msg_origin: str, summary: SaveImageReplySummary) -> None:
         batch = self._save_image_reply_batches.get(unified_msg_origin)
