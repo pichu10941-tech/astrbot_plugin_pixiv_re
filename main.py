@@ -27,6 +27,7 @@ from .scheduler import Scheduler, Subscription, SubscriptionManager, _short_id, 
 
 
 _SAVE_IMAGE_DEBOUNCE_SECONDS = 5
+_SAVE_IMAGE_TIMEOUT_SECONDS = 60
 
 
 @dataclass
@@ -79,6 +80,7 @@ class Main(Star):
             manager=self._sub_manager,
             push_cb=self._scheduled_push,
         )
+        self._save_image_timeout_tasks: dict[str, asyncio.Task] = {}
         self._save_image_reply_batches: dict[str, SaveImageReplyBatch] = {}
         self._save_image_reply_tasks: dict[str, asyncio.Task] = {}
 
@@ -93,6 +95,9 @@ class Main(Star):
 
     async def terminate(self) -> None:
         self._scheduler.stop()
+        for task in self._save_image_timeout_tasks.values():
+            task.cancel()
+        self._save_image_timeout_tasks.clear()
         for task in self._save_image_reply_tasks.values():
             task.cancel()
         self._save_image_reply_tasks.clear()
@@ -108,9 +113,11 @@ class Main(Star):
         if not image_segments:
             return
 
+        origin = event.unified_msg_origin
+        self._reset_save_image_timeout(origin)
         summary = await self._handle_save_images(event, image_segments)
         if summary is not None:
-            self._queue_save_image_reply(event.unified_msg_origin, summary)
+            self._queue_save_image_reply(origin, summary)
         event.stop_event()
 
     # ------------------------------------------------------------------ #
@@ -412,6 +419,30 @@ class Main(Star):
             nodes.append(Comp.Node(uin=0, name="Pixiv", content=[Comp.Plain(summary)]))
 
         return nodes
+
+    def _reset_save_image_timeout(self, unified_msg_origin: str) -> None:
+        task = self._save_image_timeout_tasks.get(unified_msg_origin)
+        if task and not task.done():
+            task.cancel()
+        self._save_image_timeout_tasks[unified_msg_origin] = asyncio.create_task(
+            self._save_image_timeout_watch(unified_msg_origin)
+        )
+
+    async def _save_image_timeout_watch(self, unified_msg_origin: str) -> None:
+        try:
+            await asyncio.sleep(_SAVE_IMAGE_TIMEOUT_SECONDS)
+            if self._save_image_timeout_tasks.get(unified_msg_origin) is not asyncio.current_task():
+                return
+            await self._flush_save_image_reply(unified_msg_origin)
+            self._save_image_timeout_tasks.pop(unified_msg_origin, None)
+
+            chain = MessageChain()
+            chain.message("存图状态已超时退出。")
+            await self.context.send_message(unified_msg_origin, chain)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"[pixiv save] 存图超时通知失败: {e}")
 
     def _queue_save_image_reply(self, unified_msg_origin: str, summary: SaveImageReplySummary) -> None:
         batch = self._save_image_reply_batches.get(unified_msg_origin)
